@@ -393,8 +393,14 @@ def make_loaders_mnist_noniid(n_clients: int, alpha: float, batch_size: int):
             x_tensor = tfm_i(x_tensor)
             xs_list.append(x_tensor)
             ys_list.append(int(y))
-        xs = torch.stack(xs_list, dim=0)
-        ys = torch.tensor(ys_list, dtype=torch.long)
+        
+        if len(xs_list) > 0:
+            xs = torch.stack(xs_list, dim=0)
+            ys = torch.tensor(ys_list, dtype=torch.long)
+        else:
+            xs = torch.empty(0, 1, 28, 28)
+            ys = torch.empty(0, dtype=torch.long)
+
         ds = TensorDataset(xs, ys)
         client_loaders.append(DataLoader(ds, batch_size=batch_size, shuffle=True, drop_last=False))
 

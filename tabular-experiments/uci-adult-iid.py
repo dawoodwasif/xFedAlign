@@ -300,7 +300,7 @@ def run_fedavg(cfg: FLConfig, X_train, y_train, X_test, y_test, n_features):
         for i,(Xi,yi) in enumerate(clients):
             cs[i].load_state_dict(g.state_dict())
             opt=torch.optim.Adam(cs[i].parameters(), lr=cfg.lr)
-            dl=to_loader(Xi,yi,cfg.batch,True)
+            dl=to_loader(Xi,yi,cfg.batch_size,True)
             for _ in range(cfg.local_epochs): train_epoch(cs[i],dl,opt)
             sd=cs[i].state_dict()
             if w is None: w={kk:vv.clone() for kk,vv in sd.items()}
@@ -380,7 +380,7 @@ def run_xfl(fl_x, xcfg, X_train, y_train, X_test, y_test, n_features, sens_idx, 
         for i,(Xi,yi) in enumerate(clients):
             cs[i].load_state_dict(g.state_dict())
             opt=torch.optim.Adam(cs[i].parameters(), lr=fl_x.lr)
-            dl=to_loader(Xi,yi,fl_x.batch,True)
+            dl=to_loader(Xi,yi,fl_x.batch_size,True)
             def extra_loss(m, xb, yb):
                 return sensitive_penalty(m, xb, yb, sens_idx, weight=xcfg.sens_penalty, baseline=baseline)
             for _ in range(fl_x.local_epochs):
@@ -430,8 +430,8 @@ def run_once(seed: int, raw_df: pd.DataFrame):
     train_mean = X_train.mean(axis=0).astype(np.float32)
     zero_baseline = np.zeros_like(train_mean, dtype=np.float32)
 
-    fl_base = FLConfig(n_clients=6, rounds=4, local_epochs=1, batch=256, lr=1e-3)
-    fl_x    = FLConfig(n_clients=6, rounds=8, local_epochs=1, batch=256, lr=1e-3)
+    fl_base = FLConfig(n_clients=6, rounds=4, local_epochs=1, batch_size=256, lr=1e-3)
+    fl_x    = FLConfig(n_clients=6, rounds=8, local_epochs=1, batch_size=256, lr=1e-3)
     xcfg    = XFLConfig(topk=min(48,n_features))
 
     print("Running BL-A…"); acc_A, model_A, clients_A = run_fedavg(fl_base, X_train, y_train, X_test, y_test, n_features)

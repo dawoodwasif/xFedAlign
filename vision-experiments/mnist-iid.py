@@ -560,6 +560,23 @@ def run_local_posthoc(cfg: FLConfig):
 # BL-C: SERVER-SIDE EXPLANATION SUMMARY
 # ============================================================================
 
+def pool7x7(m: torch.Tensor) -> torch.Tensor:
+    """Average pool 28x28 map to 7x7 and flatten"""
+    return F.avg_pool2d(m, kernel_size=4, stride=4).view(-1)
+
+
+def aggregate_histograms(
+    client_hists: List[Dict[int, torch.Tensor]]
+) -> Dict[int, torch.Tensor]:
+    """Robust aggregation (median) of client histograms"""
+    out = {}
+    for c in range(10):
+        stacked = torch.stack([h[c] for h in client_hists], dim=0)
+        med = stacked.median(dim=0).values
+        out[c] = normalize_to_simplex(med, dim=0)
+    return out
+
+
 def run_server_summary(cfg: FLConfig):
     """BL-C: FedAvg + server-side explanation summary"""
     acc, global_model, loaders = run_plain_fl(cfg)
@@ -658,6 +675,79 @@ def fit_surrogate_teacher_student(
             opt.step()
     
     return surr
+
+
+def run_xfl_almost_frozen(
+    base_model: nn.Module,
+    client_loaders: List[DataLoader],
+    test_loader: DataLoader,
+    xcfg: XFLConfig,
+    flcfg: FLConfig
+) -> Tuple[float, torch.Tensor, nn.Module]:
+    """Run xFedAlign with tiny task updates and alignment"""
+    global_model = SmallCNN().to(device)
+    global_model.load_state_dict(base_model.state_dict())
+    
+    # Initialize Global Prior Pi (Uniform)
+    Pi = torch.ones(10, 28*28, device=device)
+    Pi = normalize_to_simplex(Pi, dim=-1)
+    
+    def tiny_task_step(model, loader):
+        model.train()
+        opt = torch.optim.SGD(model.parameters(), lr=xcfg.tiny_task_lr, momentum=0.9)
+        for _ in range(xcfg.tiny_task_epochs):
+            for xb, yb in loader:
+                xb, yb = xb.to(device), yb.to(device)
+                logits = model(xb)
+                loss = F.cross_entropy(logits, yb)
+                opt.zero_grad(); loss.backward(); opt.step()
+
+    for r in trange(flcfg.rounds, desc="xFL rounds"):
+        beta = xcfg.beta_align_final * min(1.0, (r + 1) / max(1, xcfg.align_warmup_rounds))
+        
+        local_models = []
+        artifacts = []
+        
+        for i in range(flcfg.n_clients):
+            # Client model init
+            m = SmallCNN().to(device)
+            m.load_state_dict(global_model.state_dict())
+            
+            # 1. Tiny task update
+            tiny_task_step(m, client_loaders[i])
+            local_models.append(m)
+            
+            # 2. Surrogate Distillation
+            surr = fit_surrogate_teacher_student(m, client_loaders[i], xcfg)
+            
+            # 3. Artifact Generation (Sparsify + Mix with Pi)
+            W_surr = surr.W.weight.detach()
+            W_abs = W_surr.abs()
+            mask = torch.zeros_like(W_abs)
+            for c in range(10):
+                k = min(xcfg.topk, W_abs.size(1))
+                idx = torch.topk(W_abs[c], k).indices
+                mask[c, idx] = 1.0
+            W_sparse = W_surr * mask
+            
+            S_i = normalize_to_simplex(W_sparse, dim=-1)
+            S_mix = (1.0 - beta) * S_i + beta * Pi
+            S_mix = normalize_to_simplex(S_mix, dim=-1)
+            
+            artifacts.append(S_mix)
+            
+        # Aggregation
+        avg_state = state_dict_avg(local_models)
+        global_model.load_state_dict(avg_state)
+        
+        # Pi update (Robust Median)
+        if artifacts:
+            stacked = torch.stack(artifacts, dim=0)
+            med = stacked.median(dim=0).values
+            Pi = normalize_to_simplex(med, dim=-1)
+            
+    acc = eval_accuracy(global_model, test_loader)
+    return acc, Pi, global_model
 
 
 def surrogate_to_artifact(
@@ -835,7 +925,7 @@ def run_once(flcfg: FLConfig, xcfg: XFLConfig, seed: int):
     print(f"BL-D Acc: {acc_D:.4f}")
 
     print("\nRunning xFL (almost-frozen, tiny task step)...")
-    acc_X, Pi_X, model_X = run_xfl_almost_frozen(model_A, client_loaders_A, test_loader_A, xcfg)
+    acc_X, Pi_X, model_X = run_xfl_almost_frozen(model_A, client_loaders_A, test_loader_A, xcfg, flcfg)
     overhead_xfl = flcfg.n_clients * 10 * xcfg.topk * 3 / 1024.0
     print(f"xFL Acc: {acc_X:.4f}; overhead ≈ {overhead_xfl:.2f} KB/round")
 

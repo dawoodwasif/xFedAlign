@@ -548,6 +548,63 @@ def compute_surrogate_attribution_maps(surr: MLPSurrogate, model: nn.Module, loa
         maps[c] = normalize_to_simplex(avg_map.view(1, -1), dim=-1).view(1, 3, 32, 32)
     return maps
 
+def run_xfl(flcfg: FLConfig, xcfg: XFLConfig):
+    client_loaders, ref_loader, test_loader = make_loaders_cifar10(flcfg.n_clients, flcfg.alpha_dirichlet, flcfg.batch_size)
+    global_model = SmallCNN().to(DEVICE)
+    client_models = [SmallCNN().to(DEVICE) for _ in range(flcfg.n_clients)]
+    
+    Pi = torch.zeros(10, 128).to(DEVICE)
+    final_client_surrogates = []
+
+    for r in trange(flcfg.rounds, desc="xFL Rounds", leave=False):
+        beta = xcfg.beta_align_final * min(1.0, (r + 1) / max(1, xcfg.align_warmup_rounds))
+        local_artifacts = []
+        current_surrogates = []
+        
+        for i in range(flcfg.n_clients):
+            client_models[i].load_state_dict(global_model.state_dict())
+            local_train(client_models[i], client_loaders[i], epochs=flcfg.local_epochs, lr=flcfg.lr_cnn)
+            
+            if (r + 1) % xcfg.surrogate_every_R == 0 or (r + 1) == flcfg.rounds:
+                surr = fit_surrogate_on_features(client_models[i], client_loaders[i], xcfg)
+                current_surrogates.append((surr, client_models[i]))
+                
+                W_i = surrogate_to_artifact(surr, xcfg)
+                S_i = normalize_per_class(W_i)
+                
+                if Pi.abs().sum() == 0:
+                    S_mix = S_i
+                else:
+                    S_mix = (1.0 - beta) * S_i + beta * Pi
+                    S_mix = normalize_per_class(S_mix)
+                local_artifacts.append(S_mix)
+        
+        avg_state = state_dict_avg(client_models)
+        global_model.load_state_dict(avg_state)
+        
+        if local_artifacts:
+            stacked = torch.stack(local_artifacts, dim=0)
+            med = stacked.median(dim=0).values
+            Pi = normalize_per_class(med)
+            
+        if (r + 1) == flcfg.rounds:
+            final_client_surrogates = current_surrogates
+
+    if not final_client_surrogates:
+         for i in range(flcfg.n_clients):
+             surr = fit_surrogate_on_features(client_models[i], client_loaders[i], xcfg)
+             final_client_surrogates.append((surr, client_models[i]))
+
+    acc = eval_accuracy(global_model, test_loader)
+    
+    per_client_surr_maps = []
+    for i in tqdm(range(flcfg.n_clients), desc="xFL Maps", leave=False):
+        surr, cnn = final_client_surrogates[i]
+        maps = compute_surrogate_attribution_maps(surr, cnn, client_loaders[i], max_per_class=30)
+        per_client_surr_maps.append(maps)
+        
+    return acc, global_model, Pi, per_client_surr_maps, final_client_surrogates, (client_loaders, ref_loader, test_loader)
+
 # ----------------------------
 # Metrics & Evaluation
 # ----------------------------
