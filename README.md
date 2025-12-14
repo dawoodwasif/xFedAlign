@@ -72,7 +72,7 @@ pip install -r requirements.txt
 
 Unlike typical scripts that require many command-line flags, these scripts are pre-configured to run a full evaluation suite (5 seeds) to ensure statistical significance.
 
-Simply run the python script corresponding to the experiment you want to perform.
+Simply run the python script corresponding to the experiment you want to perform (examples given below).
 
 ### 4.1 Vision (MNIST)
 
