@@ -756,7 +756,7 @@ if __name__ == "__main__":
 
     print(f"Starting experiment for {len(seeds)} seeds...")
     for s in seeds:
-        out = run_once(flcfg, xcfg, s, base_dir="/content/ag_news_dataset", max_vocab=20000, max_len=128)
+        out = run_once(flcfg, xcfg, s, base_dir="ag_news_dataset", max_vocab=20000, max_len=128)
         for m in methods_all:
             metrics["acc"][m].append(out["acc"][m])
         for m in methods_expl:
